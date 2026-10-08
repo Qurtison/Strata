@@ -109,45 +109,77 @@ async function loadHealth() {
 }
 
 // ------------------------------------------------------------------ Monitor
-const METRICS = [
-  {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
-  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
-  {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
-  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
-  {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
-  {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
-];
-$("metrics").innerHTML = METRICS.map((m) => `
-  <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
-    ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
-    </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
-    <span class="st-metric__sub" id="ms-${m.key}"></span>`}
-    <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
-      <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
-      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-      ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
-        <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
-        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
-  </div></div>`).join("");
+// ------------------------------------------------------------------ Monitor
+// Every number the Monitor shows comes from GET /metrics; anything the server does not return stays "–" and is
+// never guessed at. The sparklines are the sampler's last minute of readings (/metrics' "history").
+function setText(id, value) { const el = $(id); if (el && el.textContent !== String(value)) el.textContent = String(value); }
+function setHTML(el, html) { if (el && el.innerHTML !== html) el.innerHTML = html; }
+const reqTime = (r) => new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : null);
 
+const SPARK_W = 160, SPARK_H = 24;
 function spark(id, values, max) {
   const svg = $(id);
-  const v = (values || []).map((x) => (x == null ? 0 : x));
-  if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
+  if (!svg) return;
+  const v = (Array.isArray(values) ? values : []).map(num).filter((x) => x != null);
+  const line = svg.querySelector(".line"), area = svg.querySelector(".area"), end = svg.querySelector(".end");
+  if (v.length < 2) {
+    line.setAttribute("d", ""); area.setAttribute("d", "");
+    if (end) end.setAttribute("hidden", "");
+    return;
+  }
   const top = Math.max(max || 0, ...v, 1e-9);
-  const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
-  svg.querySelector(".line").setAttribute("d", line);
-  svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
+  const pts = v.map((x, i) => [(i / (v.length - 1)) * SPARK_W, SPARK_H - 2 - (x / top) * (SPARK_H - 5)]);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
+  line.setAttribute("d", d);
+  area.setAttribute("d", `${d}L${SPARK_W},${SPARK_H}L0,${SPARK_H}Z`);
+  if (end) {
+    const last = pts[pts.length - 1];
+    end.setAttribute("cx", last[0].toFixed(2)); end.setAttribute("cy", last[1].toFixed(2));
+    end.removeAttribute("hidden");
+  }
 }
-function setMetric(key, value, unit, sub) {
-  $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+
+// The 56px bars the design uses for "the last 12 requests"; the newest bar carries the tone.
+function renderBars(id, values, title, tone = "accent") {
+  const v = (values || []).map(num);
+  const top = Math.max(...v.filter((x) => x != null), 1e-9);
+  const html = v.map((x, i) => {
+    const h = x == null ? 2 : Math.max(5, Math.round((x / top) * 100));
+    const t = x == null ? "track" : i === v.length - 1 ? tone : "muted";
+    return `<span class="bars__bar" data-tone="${t}" style="height:${h}%"` +
+           `${x == null ? "" : ` title="${esc(title(i, x))}"`}></span>`;
+  }).join("");
+  setHTML($(id), html || `<span class="muted small">No requests yet</span>`);
+}
+
+const CHART_W = 320, CHART_H = 56;
+// A line and area over the last 12 requests; one hover target per point carries its own title.
+function lineChart(values, tips, low, high) {
+  const pts = [];
+  (values || []).forEach((x, i) => { const v = num(x); if (v != null) pts.push([i, v]); });
+  if (pts.length < 2) return null;
+  const lo = low != null ? low : Math.min(...pts.map((p) => p[1]));
+  const hi = high != null ? high : Math.max(...pts.map((p) => p[1]));
+  const span = hi - lo || 1;
+  const P = pts.map(([i, x]) => ({x: (i / (values.length - 1)) * CHART_W,
+                                  y: CHART_H - 6 - ((x - lo) / span) * (CHART_H - 12), title: tips[i]}));
+  const line = P.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+  return {line, area: `${line} L ${CHART_W} ${CHART_H} L 0 ${CHART_H} Z`, points: P, end: P[P.length - 1]};
+}
+function drawChart(svgId, chart, ariaLabel) {
+  const svg = $(svgId);
+  const line = svg.querySelector(".chart__line"), area = svg.querySelector(".chart__area");
+  const points = svg.querySelector("g"), end = svg.querySelector(".chart__end");
+  if (ariaLabel) svg.setAttribute("aria-label", ariaLabel);
+  if (!chart) {
+    line.setAttribute("d", ""); area.setAttribute("d", ""); setHTML(points, ""); end.setAttribute("hidden", "");
+    return;
+  }
+  line.setAttribute("d", chart.line); area.setAttribute("d", chart.area);
+  setHTML(points, chart.points.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="10" fill="transparent"><title>${esc(p.title)}</title></circle>`).join(""));
+  end.setAttribute("cx", chart.end.x.toFixed(1)); end.setAttribute("cy", chart.end.y.toFixed(1));
+  end.removeAttribute("hidden");
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -190,7 +222,7 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept, m.conversation_cache);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
 }
@@ -228,105 +260,192 @@ function renderConvCache(c) {
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
 
-function renderTotals(t) {
-  if (!t || !t.requests) return "";
-  const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
-  const read = t.prompt_tokens - t.reused;
-  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
-  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
-}
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
-  // model state
-  const on = live.queued > 0 ? "queued" : live.state;
-  for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
-  const prog = $("state-progress");
-  let label = "Waiting for a request", detail = "", pct = 0;
-  if (live.state === "reading") {
-    label = "Reading prompt";
-    prog.dataset.tone = "info";
-    if (live.prompt_total) {
-      pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
-    } else {
-      detail = `${fmt(live.prompt_tokens)} tokens`;
-    }
-  } else if (live.state === "generating") {
-    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
-    delete prog.dataset.tone;
-    pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
-  } else if (last) {
-    delete prog.dataset.tone;
-    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
-  }
-  $("state-label").textContent = label;
-  $("state-detail").textContent = detail;
-  $("state-bar").style.width = `${pct}%`;
+function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept, cc) {
+  const ctxMax = eng.max_context || 0;
+  const chron = requests.slice(0, 12).reverse();          // oldest first: the charts read left to right
 
-  // the eight cards
-  const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
-  const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
-                : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
-  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
-  spark("sp-speed", h.tok_s);
-  spark("sp-prefill", h.prefill_tok_s_mean);
-  // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
+  // --- model state
+  const failed = Boolean(last && last.finish === "error");
+  const on = live.queued > 0 ? "queued" : live.state;
+  for (const b of document.querySelectorAll("#state-badges .st-badge"))
+    b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state || (b.dataset.s === "error" && failed));
+  const msgs = {idle: "Waiting for a request", reading: "Reading the prompt", generating: "Generating a response",
+                queued: "Request queued", unloaded: "Model unloaded"};
+  setText("state-label", msgs[live.state] || msgs.idle);
+  $("state-dot").dataset.state = live.state === "unloaded" ? "idle" : on;
+  let detail;
+  if (live.state === "reading")
+    detail = live.prompt_total ? `Reading ${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens`
+                               : `${fmt(live.prompt_tokens)} prompt tokens`;
+  else if (live.state === "generating") detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+  else if (failed) detail = "The last request ended with an error; its output is kept for diagnosis";
+  else if (live.state === "unloaded") detail = "The next request loads it";
+  else if (last) detail = `Last response: ${fmt(last.output_tokens)} tokens` +
+        (num(last.decode_tok_s) != null ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : "") +
+        (num(last.duration_s) != null ? ` in ${fmt(last.duration_s, 1)} s` : "");
+  else detail = "No requests yet";
+  setText("state-detail", detail);
+
+  let pLabel = "Waiting for a request", pDetail = "", pct = 0, tone = null;
+  if (live.state === "reading") {
+    pLabel = "Reading prompt"; tone = "info";
+    pct = live.prompt_total ? (100 * live.prompt_read) / live.prompt_total : 0;
+    pDetail = live.prompt_total ? `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`
+                                : `${fmt(live.prompt_tokens)} tokens`;
+  } else if (live.state === "generating") {
+    pLabel = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
+    pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
+    pDetail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+  } else if (live.queued > 0) {
+    pLabel = `${fmt(live.queued)} queued`; tone = "warn"; pDetail = "Waiting for a free slot";
+  } else if (failed) {
+    pLabel = "The last request failed"; tone = "danger"; pct = 100;
+    pDetail = "Ended with an error; output kept for diagnosis";
+  } else if (last) {
+    pDetail = `last: ${fmt(last.output_tokens)} tokens${num(last.decode_tok_s) != null ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+  }
+  setText("prog-label", pLabel); setText("prog-detail", pDetail);
+  $("state-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  const prog = $("state-progress");
+  if (tone) prog.dataset.tone = tone; else delete prog.dataset.tone;
+
+  // --- decode speed: the last 12 requests, newest on the right
+  const dec = chron.map((r) => r.decode_tok_s), decDef = dec.map(num).filter((x) => x != null);
+  const decNow = live.state === "generating" ? num(live.tok_s) : null;
+  setText("dec-when", decNow != null ? "now" : "last request");
+  setText("dec-last", decNow != null ? fmt(decNow, 1) : last ? fmt(last.decode_tok_s, 1) : "–");
+  renderBars("dec-bars", dec, (i, x) => `${reqTime(chron[i])} · ${fmt(x, 1)} tok/s`);
+  $("dec-bars").setAttribute("aria-label", decDef.length
+    ? `Decode speed, last ${decDef.length} requests, ${fmt(Math.min(...decDef), 1)} to ${fmt(Math.max(...decDef), 1)} tok/s`
+    : "Decode speed: no finished requests yet");
+  setText("dec-min", `min ${decDef.length ? fmt(Math.min(...decDef), 1) : "–"}`);
+  setText("dec-avg", `avg ${decDef.length ? fmt(decDef.reduce((a, b) => a + b, 0) / decDef.length, 1) : "–"}`);
+  setText("dec-max", `max ${decDef.length ? fmt(Math.max(...decDef), 1) : "–"}`);
+
+  // --- prefill speed: newly read tokens over the prompt's own time (reused tokens are not read)
+  const fresh = last && num(last.prompt_tokens) != null ? Math.max(0, last.prompt_tokens - (last.reused || 0)) : null;
+  const rate = (tokens, ms) => (tokens > 0 && ms > 0 ? tokens / (ms / 1000) : null);
+  const busy = live.state === "reading" || live.state === "generating";
+  const preNow = busy ? num(live.prefill_tok_s_mean) : null;
+  const preLast = last && last.prompt_ms > 0 ? rate(fresh, last.prompt_ms) : null;
+  const prefill = busy ? preNow : preLast;
+  setText("pre-when", busy ? "this request" : "last request");
+  setText("pre-last", prefill == null ? "–" : fmt(prefill));
+  const sessionFresh = totals && totals.prompt_tokens ? Math.max(0, totals.prompt_tokens - (totals.reused || 0)) : 0;
+  const sessionAvg = totals && totals.prompt_ms > 0 ? rate(sessionFresh, totals.prompt_ms) : null;
+  setText("pre-avg", sessionAvg == null ? "–" : `${fmt(sessionAvg)} tok/s`);
+  setText("pre-new", fresh == null ? "–" : fmt(fresh));
+
+  // --- prompt cache reuse: what the engine gave back instead of reading again
+  const reused = totals ? totals.reused || 0 : 0, promptTokens = totals ? totals.prompt_tokens || 0 : 0;
+  setText("cache-pct", promptTokens ? fmt((100 * reused) / promptTokens) : "–");
+  setText("cache-tokens", totals && totals.requests ? fmt(reused) : "–");
+  setText("cache-reqs", cc && cc.requests ? `${fmt(cc.requests_reused)} / ${fmt(cc.requests)}` : "–");
+  $("cache-reqs").title = cc && cc.requests ? "Over the requests the server still keeps (up to 500)" : "";
+
+  // --- expert hit rate: the last request, and its share over the last 12
+  const lastHit = last ? num(last.hit_rate) : null, lastPcie = last ? num(last.pcie_share) : null;
+  const pct100 = (x) => (x == null ? 0 : Math.min(100, x * 100));
+  setText("hit-last", lastHit == null ? "–" : fmt(lastHit * 100, 1));
+  $("hit-vram").style.width = `${pct100(lastHit)}%`;
+  $("hit-pcie").style.width = `${pct100(lastPcie)}%`;
+  setText("hit-vram-label", `VRAM ${lastHit == null ? "–" : `${fmt(lastHit * 100, 1)}%`}`);
+  setText("hit-pcie-label", `PCIe ${lastPcie == null ? "–" : `+${fmt(lastPcie * 100, 1)}%`}`);
+  const hitVals = chron.map((r) => (num(r.hit_rate) == null ? null : r.hit_rate * 100));
+  const hitTips = chron.map((r) => `${reqTime(r)} · ${num(r.hit_rate) == null ? "no expert data" : `${fmt(r.hit_rate * 100, 1)}% in VRAM`}`);
+  const hitDef = hitVals.filter((x) => x != null);
+  drawChart("hit-chart", lineChart(hitVals, hitTips,
+    hitDef.length ? Math.max(0, Math.min(...hitDef) - 2) : null,
+    hitDef.length ? Math.min(100, Math.max(...hitDef) + 2) : null),
+    hitDef.length ? `VRAM hit rate, last ${hitDef.length} requests, ${fmt(Math.min(...hitDef), 1)} to ${fmt(Math.max(...hitDef), 1)} percent` : "VRAM hit rate: no data yet");
+
+  // --- memory
+  let ctxUsed = 0;
+  if (live.state !== "idle" && live.state !== "unloaded") ctxUsed = (live.prompt_tokens || 0) + (live.generated || 0);
+  else if (last) ctxUsed = (last.prompt_tokens || 0) + (last.output_tokens || 0);
+  const ctxFrac = ctxMax ? Math.min(1, ctxUsed / ctxMax) : 0;
+  setText("ctx-text", ctxMax ? `${fmt(ctxUsed)} / ${ctxfmt(ctxMax)}` : "–");
+  $("ctx-bar").style.width = `${(ctxFrac * 100).toFixed(1)}%`;
+  setText("ctx-pct", ctxMax ? `${fmt(ctxFrac * 100)}% full` : "context size not reported");
+  setText("ctx-left", ctxMax ? `≈ ${kfmt(Math.max(0, ctxMax - ctxUsed))} tokens left` : "");
+  const ctxVal = (r) => (ctxMax ? (100 * ((r.prompt_tokens || 0) + (r.output_tokens || 0))) / ctxMax : null);
+  const ctxTips = chron.map((r) => ctxMax
+    ? `${reqTime(r)} · ${fmt(ctxVal(r), 1)}% of ${ctxfmt(ctxMax)}` : `${reqTime(r)} · context size not reported`);
+  drawChart("ctx-chart", lineChart(chron.map(ctxVal), ctxTips, 0, 100),
+    ctxMax ? `Context used over the last ${chron.length} requests, share of ${ctxfmt(ctxMax)}` : "Context used: the server did not report the context size");
+
+  const vramTotal = hw.gpu_mem_total || 0, vramUsed = hw.gpu_mem_used || 0;
+  const expertBytes = Math.min((eng.expert_cache_mib || 0) * 1048576, vramUsed);
+  const otherBytes = Math.max(0, vramUsed - expertBytes), freeBytes = Math.max(0, vramTotal - vramUsed);
+  setText("vram-text", vramTotal ? `${gb(vramUsed)} / ${gb(vramTotal, 0)} GB` : "–");
+  const width = (b) => (vramTotal ? `${Math.min(100, (100 * b) / vramTotal)}%` : "0%");
+  $("vram-experts").style.width = width(expertBytes);
+  $("vram-other").style.width = width(otherBytes);
+  $("vram-free").style.width = width(freeBytes);
+  const legend = [];
+  if (eng.expert_slots) legend.push(["info", `${fmt(eng.expert_slots)} experts · ${gb(expertBytes)} GB`]);
+  legend.push(["muted", `Other ${gb(otherBytes)} GB`], ["track", `Free ${gb(freeBytes)} GB`]);
+  setHTML($("vram-legend"), vramTotal ? legend.map(([t, s]) => `<span><i data-tone="${t}"></i>${esc(s)}</span>`).join("") : "");
+  $("vram-bar").setAttribute("aria-label", vramTotal
+    ? `VRAM of ${gb(vramTotal, 0)} GB: experts ${gb(expertBytes)} GB, other ${gb(otherBytes)} GB, free ${gb(freeBytes)} GB`
+    : (st.gpu_note || "VRAM: not readable (no NVML)"));
+
+  setText("ram-text", hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–");
+  const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
+  $("ram-bar").style.width = `${Math.min(100, ramPct)}%`;
+  if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
+
+  // --- hardware (the sparklines are the sampler's minute of history)
+  setText("hw-name", st.gpu_name || st.gpu_note || "");
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
-  setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
-  spark("sp-gpu", h.gpu_util, 100);
-  setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
-  spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
-  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
-  spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
-  spark("sp-power", h.gpu_power, hw.gpu_power_limit);
+const note = (id, text) => { const el = $(id); if (text) el.title = text; else el.removeAttribute("title"); };
+  setText("hw-gpu-label", "GPU load");
+  setText("hw-gpu", hw.gpu_util == null ? "–" : `${fmt(hw.gpu_util)} %`);
+  note("hw-gpu", multi ? per((g) => (g.util == null ? "?" : `${fmt(g.util)}%`)) : "");
+  spark("sp-hw-gpu", h.gpu_util, 100);
+  setText("hw-temp-label", "GPU temp");
+  setText("hw-temp", hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`);
+  note("hw-temp", multi ? per((g) => (g.temp == null ? "?" : `${fmt(g.temp)}°`)) : "");
+  spark("sp-hw-temp", h.gpu_temp, 90);
+  setText("hw-power-label", "Power");
+  setText("hw-power", hw.gpu_power == null ? "–"
+    : hw.gpu_power_limit ? `${fmt(hw.gpu_power)} / ${fmt(hw.gpu_power_limit)} W` : `${fmt(hw.gpu_power)} W`);
+  spark("sp-hw-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
-  spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
-  spark("sp-cpu", h.cpu, 100);
-  if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
-  } else {
-    const big = hw.disk_read_mb >= 1000;
-    setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
-  }
-  spark("sp-disk", h.disk_read_mb);
+  setText("hw-pcie-label", gen ? `PCIe${hw.gpu_pcie_gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""}` : "PCIe");
+  setText("hw-pcie", gen
+    ? `Gen${gen}${hw.gpu_pcie_width ? ` x${hw.gpu_pcie_width}` : ""}` +
+      (hw.gpu_pcie_rx_mb == null ? "" : ` · ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s`)
+    : hw.gpu_pcie_rx_mb == null ? "–" : `${fmt(hw.gpu_pcie_rx_mb, 1)} MB/s`);
+  spark("sp-hw-pcie", h.gpu_pcie_rx_mb);
+  setText("hw-cpu-label", st.threads ? `CPU · ${st.cores ? `${st.cores}c / ` : ""}${st.threads}t` : "CPU");
+  setText("hw-cpu", hw.cpu == null ? "–" : `${fmt(hw.cpu)} %`);
+  spark("sp-hw-cpu", h.cpu, 100);
+  setText("hw-disk-label", hw.disk_read_mb == null && !st.psutil ? "Disk read / write (needs psutil)" : "Disk read / write");
+  setText("hw-disk", hw.disk_read_mb == null ? "–"
+    : `${hw.disk_read_mb >= 1000 ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0)}` +
+      ` / ${hw.disk_write_mb == null ? "–" : fmt(hw.disk_write_mb, hw.disk_write_mb < 10 ? 1 : 0)}` +
+      ` ${hw.disk_read_mb >= 1000 ? "GB/s" : "MB/s"}`);
+  spark("sp-hw-disk", h.disk_read_mb);
 
-  // context fill: the running request, else the last one
-  const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
-  else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
-  $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
-  $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
-  const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
-  $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
-  $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
-  const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
-  $("ram-bar").style.width = `${ramPct}%`;
-  if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
-  $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
-  $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
+  // --- session totals
+  setText("session-since", totals && totals.since
+    ? `since ${new Date(totals.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"})}` : "");
+  const readSpeed = sessionAvg == null ? "" : ` @ ${fmt(sessionAvg)} tok/s`;
+  const writeSpeed = totals && totals.decode_ms > 0 && totals.output_tokens > 0
+    ? ` @ ${fmt(totals.output_tokens / (totals.decode_ms / 1000), 1)} tok/s` : "";
+  facts($("session-facts"), totals && totals.requests ? [
+    ["Requests", fmt(totals.requests)],
+    ["Prompt tokens read", `${fmt(sessionFresh)}${readSpeed}`],
+    ["Tokens written", `${fmt(totals.output_tokens)}${writeSpeed}`],
+    ["Reused from cache", fmt(reused)],
+  ] : [["Requests", "–"]]);
+  const out = chron.map((r) => r.output_tokens), outDef = out.map(num).filter((x) => x != null);
+  renderBars("out-bars", out, (i, x) => `${reqTime(chron[i])} · ${fmt(x)} tokens`, "info");
+  setText("out-peak", outDef.length ? `peak ${fmt(Math.max(...outDef))}` : "");
 
-  // recent requests
+  // --- recent requests
   const body = $("req-body");
   if (!requests.length) {
     body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
@@ -335,14 +454,17 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
-      const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
-      // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
-      const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
-        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+      const hit = num(r.hit_rate), pcie = num(r.pcie_share);
+      const hitCell = hit == null ? "–"
+        : `<span class="hit"><span class="hit__bar"><span class="hit__vram" style="width:${Math.min(100, hit * 100)}%"></span>` +
+          `<span class="hit__pcie" style="width:${pcie == null ? 0 : Math.min(100, pcie * 100)}%"></span></span>` +
+          `<span>${fmt(hit * 100, 1)}%</span>${pcie == null ? "" : `<span class="muted">+${fmt(pcie * 100, 1)}% PCIe</span>`}</span>`;
+      return `<tr><td>${esc(reqTime(r))}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td>` +
+        `<td class="num">${fmt(r.prompt_tokens)}</td>` +
+        `<td class="num">${fmt(Math.max(0, (r.prompt_tokens || 0) - (r.reused || 0)))}</td>` +
+        `<td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>` +
+        `<td class="num">${hitCell}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
   const all = $("req-all");
@@ -350,7 +472,6 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   all.hidden = kept <= 12;
   all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
-  $("req-totals").textContent = renderTotals(totals);
 }
 
 function facts(el, rows) {

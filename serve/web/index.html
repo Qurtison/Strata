@@ -73,58 +73,166 @@
   <!-- ============================ Monitor ============================ -->
   <section class="view view--monitor" id="view-monitor" role="tabpanel" aria-labelledby="tab-btn-monitor" hidden>
     <div class="monitor">
-      <div class="st-card state-card">
+
+      <!-- Model state -->
+      <section class="st-card state-card" aria-label="Model state">
         <div class="state-card__head">
-          <span class="card-title">Model state</span>
-          <span class="badges" id="state-badges">
-            <span class="st-badge" data-s="idle">Idle</span>
-            <span class="st-badge st-badge--reading" data-s="reading">Reading</span>
-            <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
-            <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
-            <span class="st-badge st-badge--error" data-s="error">Error</span>
-          </span>
-        </div>
-        <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
-        <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
-      </div>
-
-      <div class="metrics" id="metrics">
-        <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU, Disk read -->
-      </div>
-
-      <div class="monitor-row">
-        <div class="st-card ctx-card">
-          <span class="card-title">Context fill</span>
-          <div class="ctx-gauge">
-            <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
-              <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
-                      stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
-              <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
-                      stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
-            </svg>
-            <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+          <span class="state-dot" id="state-dot" aria-hidden="true"></span>
+          <div class="state-card__msg">
+            <h1 id="state-label">Waiting for a request</h1>
+            <p class="muted" id="state-detail">Connecting&hellip;</p>
           </div>
-          <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
-          <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
-          <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
-          <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+          <ol class="badges" id="state-badges" aria-label="Request lifecycle">
+            <li class="st-badge" data-s="idle">Idle</li>
+            <li class="st-badge st-badge--reading" data-s="reading">Reading</li>
+            <li class="st-badge st-badge--generating" data-s="generating">Generating</li>
+            <li class="st-badge st-badge--queued" data-s="queued">Queued</li>
+            <li class="st-badge st-badge--error" data-s="error">Error</li>
+          </ol>
         </div>
-        <div class="st-card req-card">
-          <div class="req-head"><span class="card-title">Recent requests</span>
-            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
-          <div class="table-wrap" id="req-wrap">
-            <table class="st-table">
-              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
-            </table>
-          </div>
-          <p class="muted req-totals" id="req-totals"></p>
+        <div class="state-card__progress">
+          <div class="bar-row"><span id="prog-label">Waiting for a request</span><span class="muted" id="prog-detail"></span></div>
+          <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
         </div>
-      </div>
+      </section>
 
+      <!-- Key metrics -->
+      <section class="key-metrics" aria-label="Key metrics">
+
+        <div class="st-card metric-card">
+          <div class="metric-head"><h2>Decode speed</h2><span class="muted small" id="dec-when">last request</span></div>
+          <div class="metric-big"><span class="metric-value" id="dec-last">&ndash;</span><span class="metric-unit">tok/s</span></div>
+          <div class="bars" id="dec-bars" role="img" aria-label="Decode speed, last 12 requests"></div>
+          <div class="metric-foot"><span id="dec-min">min &ndash;</span><span id="dec-avg">avg &ndash;</span><span id="dec-max">max &ndash;</span></div>
+        </div>
+
+        <div class="st-card metric-card">
+          <div class="metric-head"><h2>Prefill speed</h2><span class="muted small" id="pre-when">last request</span></div>
+          <div class="metric-big"><span class="metric-value" id="pre-last">&ndash;</span><span class="metric-unit">tok/s</span></div>
+          <dl class="metric-rows">
+            <div><dt>Session average</dt><dd id="pre-avg">&ndash;</dd></div>
+            <div><dt>New tokens, last</dt><dd id="pre-new">&ndash;</dd></div>
+          </dl>
+        </div>
+
+        <div class="st-card metric-card">
+          <div class="metric-head"><h2>Prompt cache reuse</h2><span class="muted small">this session</span></div>
+          <div class="metric-big"><span class="metric-value" id="cache-pct">&ndash;</span><span class="metric-unit">%</span></div>
+          <dl class="metric-rows">
+            <div><dt>Tokens reused</dt><dd id="cache-tokens">&ndash;</dd></div>
+            <div><dt>Requests with a hit, kept</dt><dd id="cache-reqs">&ndash;</dd></div>
+          </dl>
+        </div>
+
+        <div class="st-card metric-card">
+          <div class="metric-head"><h2>Expert hit rate</h2><span class="muted small">last request</span></div>
+          <div class="metric-big"><span class="metric-value" id="hit-last">&ndash;</span><span class="metric-unit">% in VRAM</span></div>
+          <div class="stackbar" id="hit-bar" role="img" aria-label="Expert hit rate: the VRAM share of looked-up experts, and the PCIe share of all routed experts">
+            <span class="stackbar__seg" id="hit-vram" data-tone="accent"></span>
+            <span class="stackbar__seg" id="hit-pcie" data-tone="info"></span>
+          </div>
+          <div class="legend"><span><i data-tone="accent"></i><span id="hit-vram-label">VRAM &ndash;</span></span>
+            <span><i data-tone="info"></i><span id="hit-pcie-label">PCIe &ndash;</span></span></div>
+          <svg class="chart" id="hit-chart" viewBox="0 0 320 56" role="img" aria-label="VRAM hit rate, last 12 requests">
+            <line class="chart__base" x1="0" y1="55.5" x2="320" y2="55.5"/>
+            <path class="chart__area" id="hit-area" fill="currentColor"/>
+            <path class="chart__line" id="hit-line"/>
+            <g id="hit-points"></g>
+            <circle class="chart__end" id="hit-end" r="4" hidden/>
+          </svg>
+        </div>
+      </section>
+
+      <!-- Memory / Hardware / Session -->
+      <section class="monitor-row" aria-label="Memory, hardware and session">
+
+        <div class="st-card memory-card">
+          <h2 class="card-title">Memory</h2>
+          <div class="mem-block">
+            <div class="bar-row"><span>Context window</span><span class="mono" id="ctx-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="ctx-bar" style="width:0%"></div></div>
+            <div class="metric-foot"><span id="ctx-pct">&ndash;</span><span id="ctx-left"></span></div>
+            <div class="chart-block">
+              <div class="muted small">Context used, last 12 requests</div>
+              <svg class="chart" id="ctx-chart" viewBox="0 0 320 56" role="img" aria-label="Context used, last 12 requests">
+                <line class="chart__base" x1="0" y1="55.5" x2="320" y2="55.5"/>
+                <path class="chart__area" id="ctx-area" fill="currentColor"/>
+                <path class="chart__line" id="ctx-line"/>
+                <g id="ctx-points"></g>
+                <circle class="chart__end" id="ctx-end" r="4" hidden/>
+              </svg>
+            </div>
+          </div>
+          <div class="mem-block">
+            <div class="bar-row"><span>VRAM</span><span class="mono" id="vram-text">&ndash;</span></div>
+            <div class="stackbar" id="vram-bar" role="img" aria-label="VRAM: experts, other, free">
+              <span class="stackbar__seg" id="vram-experts" data-tone="info"></span>
+              <span class="stackbar__seg" id="vram-other" data-tone="muted"></span>
+              <span class="stackbar__seg" id="vram-free" data-tone="track"></span>
+            </div>
+            <div class="legend" id="vram-legend"></div>
+          </div>
+          <div class="mem-block">
+            <div class="bar-row"><span>System RAM</span><span class="mono" id="ram-text">&ndash;</span></div>
+            <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <div class="st-card hw-card">
+          <div class="metric-head"><h2 class="card-title">Hardware</h2><span class="muted small" id="hw-name"></span></div>
+          <div class="hw-grid">
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-gpu-label">GPU load</div>
+              <div class="hw-tile__value" id="hw-gpu">&ndash;</div>
+              <svg class="spark" id="sp-hw-gpu" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-temp-label">GPU temp</div>
+              <div class="hw-tile__value" id="hw-temp">&ndash;</div>
+              <svg class="spark" id="sp-hw-temp" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-power-label">Power</div>
+              <div class="hw-tile__value" id="hw-power">&ndash;</div>
+              <svg class="spark" id="sp-hw-power" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-pcie-label">PCIe</div>
+              <div class="hw-tile__value" id="hw-pcie">&ndash;</div>
+              <svg class="spark" id="sp-hw-pcie" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-cpu-label">CPU</div>
+              <div class="hw-tile__value" id="hw-cpu">&ndash;</div>
+              <svg class="spark" id="sp-hw-cpu" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+            <div class="hw-tile"><div class="hw-tile__label" id="hw-disk-label">Disk read / write</div>
+              <div class="hw-tile__value" id="hw-disk">&ndash;</div>
+              <svg class="spark" id="sp-hw-disk" viewBox="0 0 160 24" role="img" aria-hidden="true">
+                <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle class="end" r="3" fill="currentColor" stroke="var(--st-surface)" stroke-width="2" hidden/></svg></div>
+          </div>
+        </div>
+
+        <div class="st-card session-card">
+          <div class="metric-head"><h2 class="card-title">Session</h2><span class="muted small" id="session-since"></span></div>
+          <dl class="facts" id="session-facts"></dl>
+          <div class="chart-block">
+            <div class="metric-foot"><span class="muted small">Output tokens per request, last 12</span><span class="muted small" id="out-peak"></span></div>
+            <div class="bars" id="out-bars" role="img" aria-label="Output tokens per request, last 12"></div>
+          </div>
+          <p class="muted small session-note">The engine keeps the last conversation's state, so a follow-up only reads what's new.</p>
+        </div>
+      </section>
+
+      <!-- Recent requests -->
+      <section class="st-card req-card" aria-labelledby="req-h">
+        <div class="req-head"><h2 class="card-title" id="req-h">Recent requests</h2>
+          <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
+        <div class="table-wrap" id="req-wrap">
+          <table class="st-table">
+            <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num" title="Prompt tokens the engine read instead of reusing cached state">New</th><th class="num">Output</th>
+              <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
+            <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Conversation cache (#596) -->
       <div class="st-card cc-card" id="cc-card">
         <div class="req-head"><span class="card-title">Conversation cache</span><span class="muted small" id="cc-sum"></span></div>
         <div class="cc-bars" id="cc-bars" hidden>
@@ -137,6 +245,7 @@
         <p class="muted small cc-note" id="cc-note"></p>
       </div>
 
+      <!-- MCP servers -->
       <div class="st-card mcp-card" id="mcp-card" hidden>
         <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
         <div class="mcp-list" id="mcp-list"></div>
